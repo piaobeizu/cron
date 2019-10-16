@@ -3,7 +3,6 @@ package cron
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -271,7 +270,7 @@ func (c *Cron) Run() {
 func (c *Cron) run() {
 	var ender *time.Timer
 	end := c.end - c.now().Unix()
-	fmt.Printf("任务将在 %ds 后结束\n", end)
+	c.logger.Info("cron will be done after %ds\n", end)
 	ender = time.NewTimer(time.Duration(end) * time.Second)
 	c.logger.Info("start")
 	// Figure out the next activation times for each entry.
@@ -327,7 +326,6 @@ func (c *Cron) run() {
 				return
 
 			case <-ender.C:
-				fmt.Println("结束任务")
 				ender.Stop()
 				c.Stop()
 				c.logger.Info("end")
