@@ -432,6 +432,22 @@ func TestStartNoop(t *testing.T) {
 	}
 }
 
+func TestDelayStart(t *testing.T) {
+	//now := time.Now().Unix()
+	i := 0
+	c := New(WithSeconds())
+	spec := "*/1 * * * * ?"
+	c.AddFunc(spec, func() {
+		i++
+		fmt.Println("cron running:", i)
+	})
+	//c.DelayStart(now + 2)
+	//c.DelayStop(now + 7)
+	c.Start()
+	time.Sleep(time.Second * 8)
+	c.Stop()
+}
+
 // Simple test using Runnables.
 func TestJob(t *testing.T) {
 	wg := &sync.WaitGroup{}

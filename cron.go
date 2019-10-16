@@ -215,7 +215,7 @@ func (c *Cron) Start() {
 		return
 	}
 	c.running = true
-	go c.run(0)
+	go c.run(-1)
 }
 
 // Start the cron scheduler in its own goroutine, or no-op if already started.
@@ -355,7 +355,7 @@ func (c *Cron) DelayStop(end int64) error {
 	t := c.now()
 	sleep := end - t.Unix()
 	if sleep > 0 {
-		c.logger.Info("任务将在 %ds 后结束", sleep)
+		c.logger.Info("任务将在 %ds 后结束\n", sleep)
 		go func() {
 			time.Sleep(time.Duration(sleep) * time.Second)
 			c.runningMu.Lock()
