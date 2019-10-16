@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ type Cron struct {
 	parser    Parser
 	nextID    EntryID
 	jobWaiter sync.WaitGroup
+	start     int64
+	end       int64
 }
 
 // Job is an interface for submitted cron jobs.
@@ -119,11 +122,44 @@ func New(opts ...Option) *Cron {
 		logger:    DefaultLogger,
 		location:  time.Local,
 		parser:    standardParser,
+		start:     0,
+		end:       99999999999,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+func DelayNew(start int64, end int64, opts ...Option) (*Cron, error) {
+	if start < 0 {
+		return nil, errors.New("start time should be grater zero")
+	}
+	if start > end {
+		return nil, errors.New("start time should be smaller end time")
+	}
+	if end < time.Now().Unix() {
+		return nil, errors.New("end time should be smaller current time")
+	}
+	c := &Cron{
+		entries:   nil,
+		chain:     NewChain(),
+		add:       make(chan *Entry),
+		stop:      make(chan struct{}),
+		snapshot:  make(chan chan []Entry),
+		remove:    make(chan EntryID),
+		running:   false,
+		runningMu: sync.Mutex{},
+		logger:    DefaultLogger,
+		location:  time.Local,
+		parser:    standardParser,
+		start:     start,
+		end:       end,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // FuncJob is a wrapper that turns a func() into a cron.Job
@@ -215,19 +251,7 @@ func (c *Cron) Start() {
 		return
 	}
 	c.running = true
-	go c.run(-1)
-}
-
-// Start the cron scheduler in its own goroutine, or no-op if already started.
-func (c *Cron) DelayStart(start int64) {
-	c.runningMu.Lock()
-	defer c.runningMu.Unlock()
-	if c.running {
-		return
-	}
-	c.running = true
-	go c.run(start)
-	time.Sleep(time.Millisecond * 20)
+	go c.run()
 }
 
 // Run the cron scheduler, or no-op if already running.
@@ -239,33 +263,26 @@ func (c *Cron) Run() {
 	}
 	c.running = true
 	c.runningMu.Unlock()
-	c.run(-1)
+	c.run()
 }
 
 // run the scheduler.. this is private just due to the need to synchronize
 // access to the 'running' state variable.
-func (c *Cron) run(start int64) {
-	if start > 0 {
-		t := c.now()
-		sleep := start - t.Unix()
-		c.logger.Info("任务将在 %ds 后执行\n", sleep)
-		if sleep > 0 {
-			time.Sleep(time.Duration(sleep) * time.Second)
-		}
-	}
+func (c *Cron) run() {
+	var ender *time.Timer
+	end := c.end - c.now().Unix()
+	fmt.Printf("任务将在 %ds 后结束\n", end)
+	ender = time.NewTimer(time.Duration(end) * time.Second)
 	c.logger.Info("start")
-
 	// Figure out the next activation times for each entry.
 	now := c.now()
 	for _, entry := range c.entries {
 		entry.Next = entry.Schedule.Next(now)
 		c.logger.Info("schedule", "now", now, "entry", entry.ID, "next", entry.Next)
 	}
-
 	for {
 		// Determine the next entry to run.
 		sort.Sort(byTime(c.entries))
-
 		var timer *time.Timer
 		if len(c.entries) == 0 || c.entries[0].Next.IsZero() {
 			// If there are no entries yet, just sleep - it still handles new entries
@@ -274,7 +291,6 @@ func (c *Cron) run(start int64) {
 		} else {
 			timer = time.NewTimer(c.entries[0].Next.Sub(now))
 		}
-
 		for {
 			select {
 			case now = <-timer.C:
@@ -286,12 +302,14 @@ func (c *Cron) run(start int64) {
 					if e.Next.After(now) || e.Next.IsZero() {
 						break
 					}
+					if c.start > 0 && c.now().Unix() < c.start {
+						continue
+					}
 					c.startJob(e.WrappedJob)
 					e.Prev = e.Next
 					e.Next = e.Schedule.Next(now)
 					c.logger.Info("run", "now", now, "entry", e.ID, "next", e.Next)
 				}
-
 			case newEntry := <-c.add:
 				timer.Stop()
 				now = c.now()
@@ -308,13 +326,19 @@ func (c *Cron) run(start int64) {
 				c.logger.Info("stop")
 				return
 
+			case <-ender.C:
+				fmt.Println("结束任务")
+				ender.Stop()
+				c.Stop()
+				c.logger.Info("end")
+				return
+
 			case id := <-c.remove:
 				timer.Stop()
 				now = c.now()
 				c.removeEntry(id)
 				c.logger.Info("removed", "entry", id)
 			}
-
 			break
 		}
 	}
@@ -349,29 +373,6 @@ func (c *Cron) Stop() context.Context {
 		cancel()
 	}()
 	return ctx
-}
-
-func (c *Cron) DelayStop(end int64) error {
-	t := c.now()
-	sleep := end - t.Unix()
-	if sleep > 0 {
-		c.logger.Info("任务将在 %ds 后结束\n", sleep)
-		go func() {
-			time.Sleep(time.Duration(sleep) * time.Second)
-			c.runningMu.Lock()
-			defer c.runningMu.Unlock()
-			if c.running {
-				c.stop <- struct{}{}
-				c.running = false
-			}
-			_, cancel := context.WithCancel(context.Background())
-			go func() {
-				c.jobWaiter.Wait()
-				cancel()
-			}()
-		}()
-	}
-	return errors.New("parameter end should be grater current time")
 }
 
 // entrySnapshot returns a copy of the current cron entry list.

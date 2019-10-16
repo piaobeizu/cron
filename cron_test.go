@@ -433,19 +433,21 @@ func TestStartNoop(t *testing.T) {
 }
 
 func TestDelayStart(t *testing.T) {
-	//now := time.Now().Unix()
 	i := 0
-	c := New(WithSeconds())
-	spec := "*/1 * * * * ?"
+	//c := New(WithSeconds())
+	now := time.Now().Unix()
+	c, err := DelayNew(now+1, now+15, WithSeconds())
+	if err != nil {
+		fmt.Print(err)
+	}
+	spec := "*/3 * * * * ?"
 	c.AddFunc(spec, func() {
 		i++
 		fmt.Println("cron running:", i)
 	})
-	//c.DelayStart(now + 2)
-	//c.DelayStop(now + 7)
 	c.Start()
-	time.Sleep(time.Second * 8)
-	c.Stop()
+	time.Sleep(time.Second * 16)
+	//c.Stop()
 }
 
 // Simple test using Runnables.
