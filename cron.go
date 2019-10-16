@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -214,7 +215,19 @@ func (c *Cron) Start() {
 		return
 	}
 	c.running = true
-	go c.run()
+	go c.run(0)
+}
+
+// Start the cron scheduler in its own goroutine, or no-op if already started.
+func (c *Cron) DelayStart(start int64) {
+	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
+	if c.running {
+		return
+	}
+	c.running = true
+	go c.run(start)
+	time.Sleep(time.Millisecond * 20)
 }
 
 // Run the cron scheduler, or no-op if already running.
@@ -226,12 +239,20 @@ func (c *Cron) Run() {
 	}
 	c.running = true
 	c.runningMu.Unlock()
-	c.run()
+	c.run(-1)
 }
 
 // run the scheduler.. this is private just due to the need to synchronize
 // access to the 'running' state variable.
-func (c *Cron) run() {
+func (c *Cron) run(start int64) {
+	if start > 0 {
+		t := c.now()
+		sleep := start - t.Unix()
+		c.logger.Info("任务将在 %ds 后执行\n", sleep)
+		if sleep > 0 {
+			time.Sleep(time.Duration(sleep) * time.Second)
+		}
+	}
 	c.logger.Info("start")
 
 	// Figure out the next activation times for each entry.
@@ -328,6 +349,29 @@ func (c *Cron) Stop() context.Context {
 		cancel()
 	}()
 	return ctx
+}
+
+func (c *Cron) DelayStop(end int64) error {
+	t := c.now()
+	sleep := end - t.Unix()
+	if sleep > 0 {
+		c.logger.Info("任务将在 %ds 后结束", sleep)
+		go func() {
+			time.Sleep(time.Duration(sleep) * time.Second)
+			c.runningMu.Lock()
+			defer c.runningMu.Unlock()
+			if c.running {
+				c.stop <- struct{}{}
+				c.running = false
+			}
+			_, cancel := context.WithCancel(context.Background())
+			go func() {
+				c.jobWaiter.Wait()
+				cancel()
+			}()
+		}()
+	}
+	return errors.New("parameter end should be grater current time")
 }
 
 // entrySnapshot returns a copy of the current cron entry list.
